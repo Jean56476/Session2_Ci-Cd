@@ -4,55 +4,57 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    branches:
-      - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 确保有仓库写入权限
+      contents: write  # 强制赋予仓库写入权限，解决128错误核心原因
 
     steps:
-      - name: Checkout repository
+      - name: 拉取代码
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0  # 拉取完整提交历史，避免 git diff 出错
+          fetch-depth: 0  # 拉取完整提交历史，避免diff命令出错
 
-      - name: Set up Python
+      - name: 设置Python环境
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
-      - name: Install dependencies
+      - name: 安装依赖
         run: |
           pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-      - name: Check for changes in training_data.csv
+      - name: 检查数据是否更新
         id: check_changes
         run: |
-          if git diff --name-only HEAD^ HEAD | grep 'training_data.csv'; then
+          # 修复之前grep无结果导致的步骤失败问题
+          set +e
+          git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -q 'training_data.csv'
+          if [ $? -eq 0 ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
           else
             echo "changed=false" >> $GITHUB_OUTPUT
           fi
+          set -e
 
-      - name: Train Linear Model
+      - name: 训练模型
         if: steps.check_changes.outputs.changed == 'true'
         run: |
           python train_model.py
 
-      - name: Push model to release branch
+      - name: 推送模型到release分支（修复版）
         if: steps.check_changes.outputs.changed == 'true'
         run: |
-          # 配置 Git 用户信息
+          # 配置Git用户
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           
-          # 添加并提交模型文件
+          # 关键修复：用Token认证，避免权限错误
+          git remote set-url origin https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          
+          # 直接force push到release分支，无需创建orphan分支
           git add linear_model.txt
           git commit -m "Auto-update model from CI/CD"
-          
-          # 强制推送到 release 分支
-          git push origin HEAD:release --force
+          git push --force origin HEAD:release
